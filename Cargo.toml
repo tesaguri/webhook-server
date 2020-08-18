@@ -18,7 +18,6 @@ http-body = "0.3"
 hyper = "0.13"
 listenfd = "0.3"
 log = "0.4"
-pin-project-lite = "0.1"
 serde = { version = "1", features = ["derive"] }
 sha-1 = "0.9"
 tokio = { version = "0.2", features = ["io-util", "macros", "process", "rt-core", "signal", "stream", "tcp", "time", "uds"] }
