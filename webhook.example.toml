@@ -1,0 +1,15 @@
+address = "127.0.0.1"
+port = 8080
+timeout = 10
+
+[[hook]]
+location = "/hello"
+program = "echo"
+args = [
+    "hello",
+]
+
+[[hook]]
+location = "/cat"
+# Stdin reads from POST body.
+program = "cat"
