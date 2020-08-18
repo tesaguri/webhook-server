@@ -7,6 +7,7 @@ program = "echo"
 args = [
     "hello",
 ]
+secret = "abcdefg"
 
 [[hook]]
 location = "/cat"

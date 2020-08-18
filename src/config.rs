@@ -23,6 +23,7 @@ fn default_timeout() -> Option<NonZeroU64> {
 pub struct Hook {
     pub program: Box<str>,
     pub args: Option<Box<[Box<str>]>>,
+    pub secret: Option<Box<str>>,
 }
 
 pub(crate) struct DisplayHookCommand<'a>(pub &'a Hook);
@@ -55,14 +56,16 @@ where
                 program: Box<str>,
                 #[serde(default)]
                 args: Option<Box<[Box<str>]>>,
+                #[serde(default)]
+                secret: Option<Box<str>>,
             }
-            while let Some(HookPrototype {
-                location,
-                program,
-                args,
-            }) = a.next_element()?
-            {
-                ret.insert(location, Hook { program, args });
+            while let Some(p) = a.next_element::<HookPrototype>()? {
+                let hook = Hook {
+                    program: p.program,
+                    args: p.args,
+                    secret: p.secret,
+                };
+                ret.insert(p.location, hook);
             }
             Ok(ret)
         }
