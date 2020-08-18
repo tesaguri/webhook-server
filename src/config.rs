@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU64;
 
 use serde::{de, Deserialize};
 
 #[derive(Deserialize)]
 pub struct Config {
-    pub address: IpAddr,
-    pub port: u16,
+    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_bind")]
+    pub bind: Option<SocketAddr>,
     #[serde(default = "default_timeout")]
     pub timeout: Option<NonZeroU64>,
     #[serde(deserialize_with = "deserialize_hook")]
@@ -25,6 +26,13 @@ pub struct Hook {
 }
 
 pub(crate) struct DisplayHookCommand<'a>(pub &'a Hook);
+
+fn deserialize_bind<'de, D>(d: D) -> Result<Option<SocketAddr>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    Option::<(IpAddr, u16)>::deserialize(d).map(|option| option.map(Into::into))
+}
 
 fn deserialize_hook<'de, D>(d: D) -> Result<HashMap<Box<str>, Hook>, D::Error>
 where

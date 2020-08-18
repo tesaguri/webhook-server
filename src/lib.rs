@@ -1,12 +1,13 @@
 pub mod config;
 
 mod service;
+mod socket;
 mod util;
 
 pub use crate::config::Config;
 
+use std::convert::TryInto;
 use std::future::Future;
-use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -14,21 +15,32 @@ use std::task::{Context, Poll};
 use futures_util::TryStreamExt;
 use hyper::server::conn::Http;
 use hyper::Body;
+use listenfd::ListenFd;
 use tokio::net::TcpListener;
 
 use crate::service::Service;
+use crate::socket::Listener;
 
-pin_project_lite::pin_project! {
-    pub struct Server {
-        incoming: TcpListener,
-        http: Http,
-        service: Arc<Service<Body>>,
-    }
+pub struct Server {
+    incoming: Listener,
+    http: Http,
+    service: Arc<Service<Body>>,
 }
 
 impl Server {
-    pub async fn new(config: Config) -> io::Result<Self> {
-        let incoming = TcpListener::bind((config.address, config.port)).await?;
+    pub async fn new(config: Config) -> anyhow::Result<Self> {
+        let incoming = if let Some(addr) = config.bind {
+            Listener::Tcp(TcpListener::bind(addr).await?)
+        } else {
+            let mut fds = ListenFd::from_env();
+            if let Some(i) = fds.take_tcp_listener(0).ok().flatten() {
+                Listener::Tcp(i.try_into()?)
+            } else if let Some(i) = fds.take_unix_listener(0).ok().flatten() {
+                Listener::Unix(i.try_into()?)
+            } else {
+                anyhow::bail!("Either `bind` in config or `$LISTEN_FD` must be provided");
+            }
+        };
         let service = Arc::new(Service::new(config));
 
         Ok(Server {
@@ -42,14 +54,13 @@ impl Server {
 impl Future for Server {
     type Output = anyhow::Result<()>;
 
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        while let Poll::Ready(option) = this.incoming.try_poll_next_unpin(cx)? {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        while let Poll::Ready(option) = self.incoming.try_poll_next_unpin(cx)? {
             match option {
                 None => return Poll::Ready(Ok(())),
                 Some(sock) => {
-                    let service = util::DerefService(this.service.clone());
-                    tokio::spawn(this.http.serve_connection(sock, service));
+                    let service = util::DerefService(self.service.clone());
+                    tokio::spawn(self.http.serve_connection(sock, service));
                 }
             }
         }
