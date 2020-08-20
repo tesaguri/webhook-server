@@ -41,12 +41,11 @@ impl Server {
                 anyhow::bail!("Either `bind` in config or `$LISTEN_FD` must be provided");
             }
         };
-        let service = Arc::new(Service::new(config));
 
         Ok(Server {
-            http: Http::new(),
             incoming,
-            service,
+            http: Http::new(),
+            service: Arc::new(Service::new(config)),
         })
     }
 }
@@ -58,9 +57,9 @@ impl Future for Server {
         while let Poll::Ready(option) = self.incoming.try_poll_next_unpin(cx)? {
             match option {
                 None => return Poll::Ready(Ok(())),
-                Some(sock) => {
+                Some(io) => {
                     let service = util::DerefService(self.service.clone());
-                    tokio::spawn(self.http.serve_connection(sock, service));
+                    tokio::spawn(self.http.serve_connection(io, service));
                 }
             }
         }
