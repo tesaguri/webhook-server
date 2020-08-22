@@ -23,7 +23,7 @@ use crate::config::{Config, DisplayHookCommand, Hook};
 
 pub struct Service<B> {
     hooks: HashMap<Box<str>, Hook>,
-    timeout: Option<Duration>,
+    timeout: Duration,
     marker: PhantomData<fn() -> B>,
 }
 
@@ -38,7 +38,7 @@ where
     pub fn new(config: Config) -> Self {
         Service {
             hooks: config.hook,
-            timeout: config.timeout.map(|t| Duration::from_secs(t.get())),
+            timeout: config.timeout,
             marker: PhantomData,
         }
     }
@@ -155,10 +155,10 @@ where
             }
             drop(stdin);
 
-            let timeout = if let Some(t) = timeout {
-                future::Either::Left(tokio::time::delay_for(t))
-            } else {
+            let timeout = if timeout == Duration::from_secs(0) {
                 future::Either::Right(future::pending())
+            } else {
+                future::Either::Left(tokio::time::delay_for(timeout))
             };
             use future::Either;
             match future::select(child, timeout).await {

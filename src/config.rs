@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
-use std::num::NonZeroU64;
+use std::time::Duration;
 
 use serde::{de, Deserialize};
 
@@ -11,13 +11,14 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_bind")]
     pub bind: Option<SocketAddr>,
     #[serde(default = "default_timeout")]
-    pub timeout: Option<NonZeroU64>,
+    #[serde(deserialize_with = "deserialize_timeout")]
+    pub timeout: Duration,
     #[serde(deserialize_with = "deserialize_hook")]
     pub hook: HashMap<Box<str>, Hook>,
 }
 
-fn default_timeout() -> Option<NonZeroU64> {
-    NonZeroU64::new(60)
+fn default_timeout() -> Duration {
+    Duration::from_secs(60)
 }
 
 pub struct Hook {
@@ -72,6 +73,13 @@ where
     }
 
     d.deserialize_seq(Visitor)
+}
+
+fn deserialize_timeout<'de, D>(d: D) -> Result<Duration, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    u64::deserialize(d).map(Duration::from_secs)
 }
 
 impl<'a> Display for DisplayHookCommand<'a> {
