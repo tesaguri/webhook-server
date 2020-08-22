@@ -8,7 +8,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use bytes::Buf;
-use futures_util::{future, stream, TryStreamExt};
+use futures_util::future::{self, Either};
+use futures_util::stream::{self, TryStreamExt};
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac, NewMac};
@@ -160,7 +161,6 @@ where
             } else {
                 future::Either::Left(tokio::time::delay_for(timeout))
             };
-            use future::Either;
             match future::select(child, timeout).await {
                 Either::Left((Ok(status), _)) => log::info!("Child exited. {}", status),
                 Either::Left((Err(e), _)) => log::error!("Error waiting for child: {:?}", e),
