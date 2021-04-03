@@ -12,9 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use futures_util::TryStreamExt;
 use hyper::server::conn::Http;
-use hyper::Body;
 use listenfd::ListenFd;
 use tokio::net::TcpListener;
 
@@ -24,7 +22,7 @@ use crate::socket::Listener;
 pub struct Server {
     incoming: Listener,
     http: Http,
-    service: Arc<Service<Body>>,
+    service: Arc<Service>,
 }
 
 impl Server {
@@ -53,15 +51,10 @@ impl Server {
 impl Future for Server {
     type Output = anyhow::Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        while let Poll::Ready(option) = self.incoming.try_poll_next_unpin(cx)? {
-            match option {
-                None => return Poll::Ready(Ok(())),
-                Some(io) => {
-                    let service = util::DerefService(self.service.clone());
-                    tokio::spawn(self.http.serve_connection(io, service));
-                }
-            }
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        while let Poll::Ready(io) = self.incoming.poll_accept(cx)? {
+            let service = util::DerefService(self.service.clone());
+            tokio::spawn(self.http.serve_connection(io, service));
         }
         Poll::Pending
     }

@@ -1,11 +1,8 @@
 use std::io;
-use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::BufMut;
-use futures_util::TryStreamExt;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 pub enum Listener {
@@ -18,17 +15,11 @@ pub enum Stream {
     Unix(UnixStream),
 }
 
-impl futures_core::Stream for Listener {
-    type Item = Result<Stream, io::Error>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+impl Listener {
+    pub fn poll_accept(&self, cx: &mut Context<'_>) -> Poll<io::Result<Stream>> {
         match *self {
-            Listener::Tcp(ref mut l) => l
-                .try_poll_next_unpin(cx)
-                .map(|result| result.map(|opt| opt.map(Stream::Tcp))),
-            Listener::Unix(ref mut l) => l
-                .try_poll_next_unpin(cx)
-                .map(|result| result.map(|opt| opt.map(Stream::Unix))),
+            Listener::Tcp(ref l) => l.poll_accept(cx).map_ok(|(sock, _)| Stream::Tcp(sock)),
+            Listener::Unix(ref l) => l.poll_accept(cx).map_ok(|(sock, _)| Stream::Unix(sock)),
         }
     }
 }
@@ -37,29 +28,11 @@ impl AsyncRead for Stream {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
         match *self {
             Stream::Tcp(ref mut s) => Pin::new(s).poll_read(cx, buf),
             Stream::Unix(ref mut s) => Pin::new(s).poll_read(cx, buf),
-        }
-    }
-
-    unsafe fn prepare_uninitialized_buffer(&self, buf: &mut [MaybeUninit<u8>]) -> bool {
-        match *self {
-            Stream::Tcp(ref s) => s.prepare_uninitialized_buffer(buf),
-            Stream::Unix(ref s) => s.prepare_uninitialized_buffer(buf),
-        }
-    }
-
-    fn poll_read_buf<B: BufMut>(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<usize>> {
-        match *self {
-            Stream::Tcp(ref mut s) => Pin::new(s).poll_read_buf(cx, buf),
-            Stream::Unix(ref mut s) => Pin::new(s).poll_read_buf(cx, buf),
         }
     }
 }
@@ -93,14 +66,21 @@ impl AsyncWrite for Stream {
         }
     }
 
-    fn poll_write_buf<B: bytes::Buf>(
+    fn poll_write_vectored(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut B,
-    ) -> Poll<io::Result<usize>> {
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
         match *self {
-            Stream::Tcp(ref mut s) => Pin::new(s).poll_write_buf(cx, buf),
-            Stream::Unix(ref mut s) => Pin::new(s).poll_write_buf(cx, buf),
+            Stream::Tcp(ref mut s) => Pin::new(s).poll_write_vectored(cx, bufs),
+            Stream::Unix(ref mut s) => Pin::new(s).poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match *self {
+            Stream::Tcp(ref s) => s.is_write_vectored(),
+            Stream::Unix(ref s) => s.is_write_vectored(),
         }
     }
 }

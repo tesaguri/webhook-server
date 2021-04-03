@@ -1,7 +1,6 @@
 use std::fs;
 
 use anyhow::Context;
-use tokio::select;
 use tokio::signal::ctrl_c;
 use webhook_server::{Config, Server};
 
@@ -19,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Starting the server");
 
-    select! {
+    tokio::select! {
         result = server => {
             result?;
             log::info!("The server has exited");

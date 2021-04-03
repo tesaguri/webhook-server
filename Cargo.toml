@@ -7,19 +7,17 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-bytes = "0.5"
-env_logger = "0.7"
-futures-core = "0.3"
+env_logger = "0.8"
 futures-util = "0.3"
 hex = "0.4"
-hmac = "0.9"
+hmac = "0.10"
 http = "0.2"
-http-body = "0.3"
-hyper = "0.13"
+http-body = "0.4.1"
+hyper = { version = "0.14", features = ["http1", "server"] }
 listenfd = "0.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 sha-1 = "0.9"
-tokio = { version = "0.2", features = ["io-util", "macros", "process", "rt-core", "signal", "stream", "tcp", "time", "uds"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 toml = "0.5"
 tower-service = "0.3"

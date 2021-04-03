@@ -1,50 +1,46 @@
 use std::collections::HashMap;
 use std::fmt::Debug;
+use std::future;
 use std::io;
-use std::marker::{PhantomData, Unpin};
-use std::pin::Pin;
 use std::process::Stdio;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use bytes::Buf;
-use futures_util::future::{self, Either};
-use futures_util::stream::{self, TryStreamExt};
+use futures_util::future::Either;
 use hmac::digest::generic_array::typenum::Unsigned;
 use hmac::digest::FixedOutput;
 use hmac::{Hmac, Mac, NewMac};
 use http::header::HeaderName;
 use http::StatusCode;
 use http_body::Body;
+use http_body::Empty;
 use sha1::Sha1;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 use crate::config::{Config, DisplayHookCommand, Hook};
 
-pub struct Service<B> {
+pub struct Service {
     hooks: HashMap<Box<str>, Hook>,
     timeout: Duration,
-    marker: PhantomData<fn() -> B>,
 }
 
 const X_HUB_SIGNATURE: &str = "x-hub-signature";
 
-impl<B> Service<B>
-where
-    B: Body + Default + From<Vec<u8>> + Send + Unpin + 'static,
-    B::Data: Send + Sync,
-    B::Error: Debug + Send,
-{
+impl Service {
     pub fn new(config: Config) -> Self {
         Service {
             hooks: config.hook,
             timeout: config.timeout,
-            marker: PhantomData,
         }
     }
 
-    fn call(&self, req: http::Request<B>) -> http::Response<B> {
+    fn call<B>(&self, req: http::Request<B>) -> http::Response<Empty<&'static [u8]>>
+    where
+        B: Body + Send + 'static,
+        B::Data: Send,
+        B::Error: Debug,
+    {
         let res = http::Response::builder();
 
         let hook = if let Some(hook) = self.hooks.get(req.uri().path()) {
@@ -52,7 +48,7 @@ where
         } else {
             return res
                 .status(StatusCode::NOT_FOUND)
-                .body(B::default())
+                .body(Empty::new())
                 .unwrap();
         };
 
@@ -65,20 +61,20 @@ where
                         Err(SignatureParseError::Malformed) => {
                             return res
                                 .status(StatusCode::BAD_REQUEST)
-                                .body(Default::default())
+                                .body(Empty::new())
                                 .unwrap()
                         }
                         Err(SignatureParseError::UnknownAlgorithm) => {
                             return res
                                 .status(StatusCode::NOT_ACCEPTABLE)
-                                .body(Default::default())
+                                .body(Empty::new())
                                 .unwrap()
                         }
                     }
                 } else {
                     return res
                         .status(StatusCode::UNAUTHORIZED)
-                        .body(Default::default())
+                        .body(Empty::new())
                         .unwrap();
                 };
             Some((mac, signature))
@@ -86,8 +82,7 @@ where
             None
         };
 
-        let mut body = req.into_body();
-        let body = stream::poll_fn(move |cx| Pin::new(&mut body).poll_data(cx));
+        let body = req.into_body();
 
         log::info!("Executing a hook: {}", DisplayHookCommand(hook));
 
@@ -106,7 +101,7 @@ where
                 }
                 return res
                     .status(StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(B::default())
+                    .body(Empty::new())
                     .unwrap();
             }
         };
@@ -117,17 +112,13 @@ where
             log::error!("Failed to open stdin of child");
             return res
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(B::default())
+                .body(Empty::new())
                 .unwrap();
         };
 
         let timeout = self.timeout;
         tokio::spawn(async move {
-            let body = body.try_fold(Vec::new(), |mut vec, chunk| {
-                vec.extend(chunk.bytes());
-                future::ok(vec)
-            });
-            let body = match body.await {
+            let body = match hyper::body::to_bytes(body).await {
                 Ok(body) => body,
                 Err(e) => {
                     log::error!("Failed to read request body: {:?}", e);
@@ -157,31 +148,34 @@ where
             drop(stdin);
 
             let timeout = if timeout == Duration::from_secs(0) {
-                future::Either::Right(future::pending())
+                Either::Right(future::pending())
             } else {
-                future::Either::Left(tokio::time::delay_for(timeout))
+                Either::Left(tokio::time::sleep(timeout))
             };
-            match future::select(child, timeout).await {
-                Either::Left((Ok(status), _)) => log::info!("Child exited. {}", status),
-                Either::Left((Err(e), _)) => log::error!("Error waiting for child: {:?}", e),
-                Either::Right((_, mut child)) => {
+            tokio::select! {
+                biased;
+                result = child.wait() => match result {
+                    Ok(status) => log::info!("Child exited. {}", status),
+                    Err(e) => log::error!("Error waiting for child: {:?}", e),
+                },
+                _ = timeout => {
                     log::warn!("Timed out waiting for child");
-                    let _ = child.kill();
+                    let _ = child.start_kill();
                 }
             }
         });
 
-        res.body(B::default()).unwrap()
+        res.body(Empty::new()).unwrap()
     }
 }
 
-impl<B> tower_service::Service<http::Request<B>> for &Service<B>
+impl<B> tower_service::Service<http::Request<B>> for &Service
 where
-    B: Body + Default + From<Vec<u8>> + Send + Sync + Unpin + 'static,
-    B::Data: Send + Sync,
+    B: Body + Send + 'static,
+    B::Data: Send,
     B::Error: Debug + Send,
 {
-    type Response = http::Response<B>;
+    type Response = http::Response<Empty<&'static [u8]>>;
     type Error = std::convert::Infallible;
     type Future = future::Ready<Result<Self::Response, Self::Error>>;
 
@@ -190,7 +184,7 @@ where
     }
 
     fn call(&mut self, req: http::Request<B>) -> Self::Future {
-        future::ok((*self).call(req))
+        future::ready(Ok((*self).call(req)))
     }
 }
 
