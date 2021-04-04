@@ -8,6 +8,7 @@ pub use crate::config::Config;
 
 use std::convert::TryInto;
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -29,15 +30,10 @@ impl Server {
     pub async fn new(config: Config) -> anyhow::Result<Self> {
         let incoming = if let Some(addr) = config.bind {
             Listener::Tcp(TcpListener::bind(addr).await?)
+        } else if let Some(l) = listen_fd()? {
+            l
         } else {
-            let mut fds = ListenFd::from_env();
-            if let Some(i) = fds.take_tcp_listener(0).ok().flatten() {
-                Listener::Tcp(i.try_into()?)
-            } else if let Some(i) = fds.take_unix_listener(0).ok().flatten() {
-                Listener::Unix(i.try_into()?)
-            } else {
-                anyhow::bail!("Either `bind` in config or `$LISTEN_FD` must be provided");
-            }
+            anyhow::bail!("Either `bind` in config or `$LISTEN_FD` must be provided");
         };
 
         Ok(Server {
@@ -58,4 +54,16 @@ impl Future for Server {
         }
         Poll::Pending
     }
+}
+
+fn listen_fd() -> io::Result<Option<Listener>> {
+    let mut fds = ListenFd::from_env();
+    if let Some(l) = fds.take_tcp_listener(0).ok().flatten() {
+        return Ok(Some(Listener::Tcp(l.try_into()?)));
+    }
+    #[cfg(unix)]
+    if let Some(l) = fds.take_unix_listener(0).ok().flatten() {
+        return Ok(Some(Listener::Unix(l.try_into()?)));
+    }
+    Ok(None)
 }
