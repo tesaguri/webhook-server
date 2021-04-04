@@ -1,0 +1,186 @@
+name: CI/CD
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        toolchain:
+          - stable
+          - beta
+          - nightly
+        include:
+          - toolchain: stable
+            components: clippy
+          - os: ubuntu-latest
+            toolchain: stable
+            components: clippy,rustfmt
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          override: true
+          profile: minimal
+          components: ${{ matrix.components }}
+      - name: Check format
+        if: contains(matrix.components, 'rustfmt')
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: -- --check
+      - uses: Swatinem/rust-cache@v1
+      - name: Clippy library
+        if: contains(matrix.components, 'clippy')
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --lib -- --deny rust-2018-idioms --deny warnings
+      - name: Clippy all
+        if: contains(matrix.components, 'clippy')
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: -- --deny warnings
+      - name: Build library
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --lib --verbose
+      - name: Build all
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --verbose
+
+  build:
+    name: Build release artifacts
+    if: |
+      github.event_name == 'push'
+      && startsWith(github.event.ref, 'refs/tags/v0.')
+      || startsWith(github.event.ref, 'refs/tags/v1')
+      || startsWith(github.event.ref, 'refs/tags/v2')
+      || startsWith(github.event.ref, 'refs/tags/v3')
+      || startsWith(github.event.ref, 'refs/tags/v4')
+      || startsWith(github.event.ref, 'refs/tags/v5')
+      || startsWith(github.event.ref, 'refs/tags/v6')
+      || startsWith(github.event.ref, 'refs/tags/v7')
+      || startsWith(github.event.ref, 'refs/tags/v8')
+      || startsWith(github.event.ref, 'refs/tags/v9')
+      || github.event.ref == 'refs/heads/release-test'
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+          - x86_64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+          - x86_64-pc-windows-msvc
+          - x86_64-unknown-freebsd
+        include:
+          - os: ubuntu-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: aarch64-unknown-linux-gnu
+            use_cross: true
+          - target: armv7-unknown-linux-gnueabihf
+            use_cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-freebsd
+            use_cross: true
+    steps:
+      - uses: actions/checkout@v2
+      - name: Install Rust toolchain
+        if: ${{ !matrix.use_cross }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          profile: minimal
+      - name: Install `cross`
+        if: matrix.use_cross
+        uses: actions-rs/install@v0.1
+        with:
+          crate: cross
+          use-tool-cache: true
+      # <https://github.com/actions/virtual-environments/issues/2557#issuecomment-769611326>
+      - name: Switch Xcode SDK
+        if: ${{ runner.os == 'macOS' }}
+        run: |
+          set -o xtrace
+          sudo mv /Library/Developer/CommandLineTools/SDKs{,.disabled} &&
+          sudo xcode-select --reset &&
+          xcode-select --print-path
+      - name: Build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --verbose --bin webhook-server --release --target '${{ matrix.target }}'
+          use-cross: ${{ matrix.use_cross }}
+      - name: Archive the binary
+        id: archive
+        run: |
+          set -o errexit
+          tag="$(echo '${{ github.ref }}' | sed -E 's/^refs\/[^\/]+\///')"
+          name="webhook-server-$tag-${{ matrix.target }}"
+          if [ '${{ runner.os }}' = Windows ]; then
+            asset_name="$name.zip"
+            ln 'target/${{ matrix.target }}/release/webhook-server.exe' .
+            7z a "$asset_name" webhook-server.exe
+          else
+            asset_name="$name.tar.gz"
+            ln 'target/${{ matrix.target }}/release/webhook-server' .
+            tar -czf "$asset_name" webhook-server
+          fi
+          echo "::set-output name=asset::$asset_name"
+        shell: bash
+      - name: Upload artifact
+        uses: actions/upload-artifact@v2
+        with:
+          path: ${{ steps.archive.outputs.asset }}
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/download-artifact@v2
+      - name: Create release and upload assets
+        # Reference: <https://github.com/actions/upload-release-asset/issues/28#issuecomment-617208601>
+        run: |
+          set -o errexit -o xtrace
+          args=()
+          tag_name="${GITHUB_REF##*/}"
+          if [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
+            # Fetch the tagging message
+            git tag -d "$tag_name"
+            git fetch --no-tags origin "$tag_name:$GITHUB_REF"
+            message="$(git tag -l --format='%(contents)' "$tag_name" | sed -n '/^-----BEGIN PGP SIGNATURE-----$/q;p')"
+          else
+            message='Test release'
+            args+=('--draft')
+          fi
+          for asset in *.{gz,zip}; do
+            args+=('--attach' "$asset")
+          done
+          hub release create --message "$message" "${args[@]}" "$tag_name"
+        shell: bash
+        working-directory: artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
