@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{de, Deserialize};
 
 #[derive(Deserialize)]
+#[non_exhaustive]
 pub struct Config {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_bind")]
@@ -21,6 +22,7 @@ fn default_timeout() -> Duration {
     Duration::from_secs(60)
 }
 
+#[non_exhaustive]
 pub struct Hook {
     pub program: Box<str>,
     pub args: Option<Box<[Box<str>]>>,
