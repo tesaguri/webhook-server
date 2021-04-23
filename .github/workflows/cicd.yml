@@ -161,26 +161,41 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - uses: actions/download-artifact@v2
-      - name: Create release and upload assets
-        # Reference: <https://github.com/actions/upload-release-asset/issues/28#issuecomment-617208601>
+      - name: Sign release assets
+        working-directory: artifact
         run: |
           set -o errexit -o xtrace
-          args=()
-          tag_name="${GITHUB_REF##*/}"
-          if [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
-            # Fetch the tagging message
-            git tag -d "$tag_name"
-            git fetch --no-tags origin "$tag_name:$GITHUB_REF"
-            message="$(git tag -l --format='%(contents)' "$tag_name" | sed -n '/^-----BEGIN PGP SIGNATURE-----$/q;p')"
-          else
-            message='Test release'
-            args+=('--draft')
-          fi
-          for asset in *.{gz,zip}; do
-            args+=('--attach' "$asset")
+          gpg --batch --import <<< "$PRIVATE_KEY"
+          for f in *; do
+            gpg --batch --local-user C90F234F43B5075A0D96C6D5986E104E7F079F61 --armor --detach-sign "$f"
           done
-          hub release create --message "$message" "${args[@]}" "$tag_name"
+          gpg --batch --yes --delete-secret-keys C90F234F43B5075A0D96C6D5986E104E7F079F61
         shell: bash
-        working-directory: artifact
+        env:
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+      - name: Get the tag info
+        id: tag
+        run: |
+          set -o errexit
+          if [[ "$GITHUB_REF" == 'refs/tags/'* ]]; then
+            tag="${GITHUB_REF#refs/tags/}"
+            git tag -d "$tag"
+            git fetch --no-tags origin "$tag:$GITHUB_REF"
+            echo "::set-output name=subject::$(git tag --list --format='%(contents:subject)' "$tag")"
+            git tag -l --format='%(contents:body)' "$tag" |
+              sed -n '/^-----BEGIN PGP SIGNATURE-----$/q; p' \
+              > body.txt
+          else
+            echo "::set-output name=subject::Test release"
+            touch body.txt
+          fi
+        shell: bash
+      - name: Create release
+        uses: tesaguri/action-gh-release@draft-wo-tag
+        with:
+          body_path: body.txt
+          name: ${{ steps.tag.outputs.subject }}
+          draft: ${{ github.event.ref == 'refs/heads/release-test' }}
+          files: artifact/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
